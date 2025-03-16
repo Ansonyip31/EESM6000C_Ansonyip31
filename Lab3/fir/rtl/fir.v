@@ -57,11 +57,14 @@ wire [3:0] cs_tap_addr_cnt;
 reg[31:0]ns_res;
 wire[31:0]cs_res;
 
-wire [2:0] ns_ap_ctrl;
+reg [2:0] ns_ap_ctrl;
 wire [2:0] cs_ap_ctrl;
 
-wire[31:0] ns_data_length;
+reg[31:0] ns_data_length;
 wire[31:0] cs_data_length;
+
+reg [3:0] ns_data_acc;
+wire [3:0] cs_data_acc;
 
 wire ns_rvalid;
 wire cs_rvalid;
@@ -74,7 +77,7 @@ dffr #(.WIDTH(4)) u_dffr_data_acc (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_data
 dffr #(.WIDTH(10)) u_dffr_data_out_cnt (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_data_out_cnt) , .q(cs_data_out_cnt));
 dffr #(.WIDTH(4)) u_dffr_tap_addr_cnt (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_tap_addr_cnt) , .q(cs_tap_addr_cnt));
 dffr #(.WIDTH(32)) u_dffr_res (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_res) , .q(cs_res));
-dffr #(.WIDTH(1)) u_dffr_tap_addr_cnt (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_rvalid) , .q(cs_rvalid));
+dffr #(.WIDTH(1)) u_dffr_ns_valid (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_rvalid) , .q(cs_rvalid));
 parameter IDLE=2'd0, WAIT_IN=2'd1, CAL=2'd2, WAIT_OUT=2'd3;
 always@(*)begin
     case(cs_state)
@@ -105,14 +108,14 @@ always@(*)begin
                     ns_state=CAL;
                     ns_wait_data_cnt= cs_wait_data_cnt+4'b1;
                 if(cs_wait_data_cnt==cs_data_out_cnt+10'd2)begin
-                    ns_data_acc ==4'b0;
-                    ns_state    ==WAIT_OUT;
+                    ns_data_acc =4'b0;
+                    ns_state    =WAIT_OUT;
                     ns_wait_data_cnt =4'b0;
                 end
                 end else begin 
                 ns_data_acc =cs_data_acc +4'b1;
                 ns_state=CAL;
-                ns_wait_data_cnt=cs_wait_data_cnt=4'b1;
+                ns_wait_data_cnt=cs_wait_data_cnt==4'b1;
                 end 
             end else if(cs_data_out_cnt> 10'ha)begin 
                 ns_data_acc = (cs_wait_data_cnt ==4'hc)?4'b0:
@@ -132,7 +135,7 @@ always@(*)begin
             end
         end 
         WAIT_OUT: begin 
-                ns_state=(sm_tready&&sm_tvalid)?(cs_data_out_cnt==cs_data_length-32'b1)?10'b0:cs_data_cnt+10'b1:cs_data_out_cnt;
+                ns_state=(sm_tready&&sm_tvalid)?(cs_data_out_cnt==cs_data_length-32'b1)?10'b0:cs_data_out_cnt+10'b1:cs_data_out_cnt;
         end
     endcase 
 end 
@@ -141,47 +144,51 @@ dffs #(.WIDTH(1)) u_dffs_ap_ctrl (.clk(axis_clk),.rst_n(axis_rst_n),.d(ns_ap_ctr
 dffr #(.WIDTH(32)) u_dffr_data_length (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_data_length) , .q(cs_data_length));
 always @(*)begin 
     if(cs_state==IDLE)begin 
-        if(awaddr=12'h0)begin 
+        if(awaddr==12'h0)begin 
             if(cs_ap_ctrl[2]&!cs_ap_ctrl[0])
                 ns_ap_ctrl ={cs_ap_ctrl[2],1'b0,wdata[0]};
             else if (cs_ap_ctrl[0]==1'b1)
                 ns_ap_ctrl ={1'b0,cs_ap_ctrl[1:0]};
         end 
     end else if(cs_state==WAIT_IN)begin 
-            if(ss_tvalid &7 ss_tready && cs_ap_ctrl[0]==1)begin
+            if(ss_tvalid & ss_tready && cs_ap_ctrl[0]==1)begin
                 ns_ap_ctrl<=3'b0;
             end 
     end else if(cs_state==WAIT_OUT)begin
             if((cs_data_out_cnt==cs_data_length-1)&sm_tready&sm_tvalid)begin    
-                ns_ap_ctrl={1'b1,1'b1,cs_ap_ctrl[0]}
+                ns_ap_ctrl={1'b1,1'b1,cs_ap_ctrl[0]};
             end 
     end 
 end 
 always @(*)begin 
     if(cs_state==IDLE)begin 
-        if(awaddr=12'h0)begin 
+        if(awaddr==12'h0)begin 
             if (cs_ap_ctrl[0]==1'b1)
                 ns_data_length =wdata;
         end 
     end
 end 
+reg [(pDATA_WIDTH-1):0] cs_rdata;
+assign rdata=cs_rdata;
  always @(*) begin
         case(cs_state)
             IDLE: begin
-                rdata = (rvalid && araddr >= 12'h40) ? tap_Do : 32'd0;
+                cs_rdata = (rvalid && araddr >= 12'h40) ? tap_Do : 32'd0;
             end
             WAIT_IN: begin
-                rdata = (rvalid && araddr == 12'h00) ? {26'b0, (cs_state==WAIT_OUT), (cs_state==WAIT_IN), 1'b0, cs_ap_ctrl[2:0]} : 32'd0;
+                cs_rdata = (rvalid && araddr == 12'h00) ? {26'b0, (cs_state==WAIT_OUT), (cs_state==WAIT_IN), 1'b0, cs_ap_ctrl[2:0]} : 32'd0;
             end
-            default: rdata = 0;
+            default: cs_rdata = 0;
         endcase
 end
+reg cs_arready;
+assign arready=cs_arready;
  always @(*) begin
         case(cs_state)
             IDLE: begin
-                arready = (awaddr >= 12'h40 && araddr >= 12'h40) ? arvalid : 1'd0;
+                cs_arready = (awaddr >= 12'h40 && araddr >= 12'h40) ? arvalid : 1'd0;
             end
-            default: arready = arvalid;
+            default: cs_arready = arvalid;
         endcase
 end
  assign ns_rvalid=arready;
@@ -194,37 +201,42 @@ end
  assign ns_tap_Do=tap_Do;
 
 dffr #(.WIDTH(32)) u_dffr_tap_do (.clk(axis_clk),.rst_n(axis_rst_n), .d(ns_tap_Do) , .q(cs_tap_Do));
-
+reg [3:0] cs_tap_WE;
+assign tap_WE=cs_tap_WE;
 always@(*)begin
     case(cs_state)
         IDLE:begin
-                tap_WE={4{wvalid}};
+                cs_tap_WE={4{wvalid}};
         end 
         CAL:begin
-            tap_WE=4'b0;
+            cs_tap_WE=4'b0;
         end 
         default:begin
-            tap_WE=4'b0
+            cs_tap_WE=4'b0;
         end 
     endcase 
 end 
+reg [(pDATA_WIDTH-1):0] cs_tap_Di;
+assign tap_Di=cs_tap_Di;
 always@(*)begin
     case(cs_state)
         IDLE:begin
-                tap_Di=$signed(wdata);
+                cs_tap_Di=$signed(wdata);
         end 
         CAL:begin
-            tap_Di=32'b0;
+            cs_tap_Di=32'b0;
         end 
         default:begin
-            tap_Di=32'b0
+            cs_tap_Di=32'b0;
         end 
     endcase 
 end 
+reg[(pADDR_WIDTH-1):0] cs_tap_A;
+assign tap_A=cs_tap_A;
 always@(*)begin
     case(cs_state)
         IDLE:begin
-                tap_A=      (awaddr == 12'h40) ? 11'h0 : 
+                cs_tap_A=      (awaddr == 12'h40) ? 11'h0 : 
                             (awaddr == 12'h44) ? 11'h4 :
                             (awaddr == 12'h48) ? 11'h8 :
                             (awaddr == 12'h4c) ? 11'hc :
@@ -237,35 +249,39 @@ always@(*)begin
                             (awaddr == 12'h68) ? 11'h28 : 11'h0;
         end 
         CAL:begin
-                if (cs_data_cnt >= 2'd0) begin
+                if (cs_data_out_cnt >= 2'd0) begin
                     if (cs_data_out_cnt <= 10'd10) begin
-                        tap_A = (cs_data_out - cs_data_acc) << 2'd2;
+                        cs_tap_A = (cs_data_out_cnt - cs_data_acc) << 2'd2;
                     end
-                    else if (cs_data_out > 10'd10) begin
-                        tap_A = cs_tap_addr_cnt << 2'd2;
+                    else if (cs_data_out_cnt > 10'd10) begin
+                        cs_tap_A = cs_tap_addr_cnt << 2'd2;
                     end
                 end
         end 
         default:begin
-            tap_Di=32'b0
+            cs_tap_A=11'b0;
         end 
     endcase 
 end 
+reg [(pDATA_WIDTH-1):0] cs_sm_tdata;
+assign sm_tdata=cs_sm_tdata;
 always@(*)begin
     case(cs_state)
         WAIT_OUT:begin
-                sm_tdata=cs_res;
+                cs_sm_tdata=cs_res;
         end 
         default:begin
-            sm_tdata=32'b0
+            cs_sm_tdata=32'b0;
         end 
     endcase 
 end 
-assign sm_tlast = (cs_data_out_cnt==cs_data_length-1)&&cs_sm_tready&&cs_sm_tvalid;
+assign sm_tlast = (cs_data_out_cnt==cs_data_length-1)&&sm_tready&&cs_sm_tvalid;
 assign ss_tready =cs_ss_tready;
 assign sm_tvalid =cs_sm_tvalid;
-wire ns_ss_tready, cs_ss_tready;
-wire ns_sm_tvalid, cs_sm_tvalid; 
+reg ns_ss_tready;
+wire cs_ss_tready;
+reg ns_sm_tvalid;
+wire cs_sm_tvalid; 
 dffr #(.WIDTH(1)) u_dffr_sm_tready (.clk(axis_clk),.rst_n(axis_rst_n),.d(ns_ss_tready),.q(cs_ss_tready));
 dffr #(.WIDTH(1)) u_dffr_sm_tvalid (.clk(axis_clk),.rst_n(axis_rst_n),.d(ns_sm_tvalid),.q(cs_sm_tvalid));
 always @(*) begin
@@ -287,38 +303,44 @@ always @(*) begin
 end
 assign data_EN =1'b1;
 wire [(pDATA_WIDTH-1):0] ns_data_Do, cs_data_Do;
-wire [(pADDR_WIDTH-1):0] ns_data_A, cs_data_A;
+reg [(pADDR_WIDTH-1):0] ns_data_A;
+wire [(pADDR_WIDTH-1):0] cs_data_A;
 dffr #(.WIDTH(pADDR_WIDTH)) u_dffr_data_A (.clk(axis_clk),.rst_n(axis_rst_n),.d(ns_data_A),.q(cs_data_A));
 dffr #(.WIDTH(pDATA_WIDTH)) u_dffr_Do (.clk(axis_clk),.rst_n(axis_rst_n),.d(ns_data_Do),.q(cs_data_Do));
+reg [3:0] cs_data_WE;
+reg[(pDATA_WIDTH-1):0]cs_data_Di;
 
-always (*)begin 
+assign data_WE=cs_data_WE;
+assign data_A=ns_data_A;
+assign data_Di=cs_data_Di;
+always @(*)begin 
     case(cs_state)
         IDLE: begin 
             if(awaddr == 12'h40 ||cs_wait_data_cnt !=4'b0)begin 
-                data_WE=4'hf;
-                data_A =cs_wait_data_cnt<<2'h2;
-                data_Di  =0;
+                cs_data_WE=4'hf;
+                ns_data_A =cs_wait_data_cnt<<2'h2;
+                cs_data_Di  =0;
             end 
         end 
         WAIT_IN:begin
             if(ss_tvalid && ss_tready)begin
-                data_Di=$signed(ss_tdata);
-                data_A=(cs_data_out_cnt%11)<<2'h2; 
-                data_WE=4'hf;
+                cs_data_Di=$signed(ss_tdata);
+                ns_data_A=(cs_data_out_cnt%11)<<2'h2; 
+                cs_data_WE=4'hf;
         end 
         end
         CAL:begin
-            data_WE=4'h0;
+            cs_data_WE=4'h0;
             if(cs_wait_data_cnt>=2'b0)begin
-                if(data_out_cnt<=10'ha)begin
-                    data_A=data_acc<<2'h2;
-                    data_Di=0;
+                if(cs_data_out_cnt<=10'ha)begin
+                    ns_data_A=cs_data_acc<<2'h2;
+                    cs_data_Di=0;
                 end else if(cs_data_out_cnt >10'ha)begin
-                    data_Di=0;
-                    if(data_acc==4'h0)begin
-                        data_A=(cs_data_out_cnt%11)<<2'h2;
+                    cs_data_Di=0;
+                    if(cs_data_acc==4'h0)begin
+                        ns_data_A=(cs_data_out_cnt%11)<<2'h2;
                     end else begin 
-                        data_A=cs_data_A+4'h4;
+                        ns_data_A=cs_data_A+4'h4;
                         if(cs_data_A==11'h40)begin
                             ns_data_A=11'b0;
                         end
@@ -344,15 +366,15 @@ endmodule
 
 module dffr #(parameter WIDTH=1)(
   input clk,
-  input rst,
+  input rst_n,
   input [WIDTH-1:0] d,
   output reg [WIDTH-1:0] q
 );
 
 parameter RESET_VALUE =0;
 
-always@(posedge clk or posedge rst)begin 
-  if (rst)begin 
+always@(posedge clk or posedge rst_n)begin 
+  if (rst_n)begin 
     q<= RESET_VALUE;
   end else begin 
     q<=d;
@@ -365,15 +387,15 @@ endmodule
 
 module dffs #(parameter WIDTH=1)(
   input clk,
-  input rst,
+  input rst_n,
   input [WIDTH-1:0] d,
   output reg [WIDTH-1:0] q
 );
 
 parameter RESET_VALUE =1;
 
-always@(posedge clk or posedge rst)begin 
-  if (rst)begin 
+always@(posedge clk or posedge rst_n)begin 
+  if (rst_n)begin 
     q<= RESET_VALUE;
   end else begin 
     q<=d;
